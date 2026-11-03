@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="fr">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Reconnaissance de chiffres</title>
+
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 650px;
+            margin: 40px auto;
+            padding: 0 16px;
+        }
+
+        canvas {
+            display: block;
+            width: 280px;
+            max-width: 100%;
+            height: auto;
+            border: 2px solid #444;
+            background: black;
+            touch-action: none;
+            cursor: crosshair;
+        }
+
+        button {
+            padding: 10px 18px;
+            margin: 12px 8px 12px 0;
+            font-size: 16px;
+        }
+
+        #result {
+            font-size: 20px;
+            font-weight: bold;
+            margin-top: 15px;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Reconnaissance de chiffres</h1>
+    <p>Dessinez un chiffre en blanc sur le fond noir, puis cliquez sur « Prédire ».</p>
+
+    <canvas id="canvas" width="280" height="280"></canvas>
+
+    <button id="clear" type="button">Effacer</button>
+    <button id="predict" type="button">Prédire</button>
+
+    <div id="result" role="status">Résultat : —</div>
+
+    <script>
+        // Adresse de l’API FastAPI.
+        // Si le backend tourne sur un autre ordinateur, remplacez 127.0.0.1
+        // par son adresse IP ou son nom de domaine.
+        const API_URL = "http://127.0.0.1:8000/predict";
+
+        const canvas = document.getElementById("canvas");
+        const ctx = canvas.getContext("2d");
+        const resultBox = document.getElementById("result");
+        const predictButton = document.getElementById("predict");
+
+        let drawing = false;
+
+        ctx.strokeStyle = "white";
+        ctx.fillStyle = "white";
+        ctx.lineWidth = 24;
+        ctx.lineCap = "round";
+        ctx.lineJoin = "round";
+
+        function clearCanvas() {
+            ctx.fillStyle = "black";
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            resultBox.textContent = "Résultat : —";
+        }
+
+        function getCanvasPosition(event) {
+            const rect = canvas.getBoundingClientRect();
+
+            return {
+                x: (event.clientX - rect.left) * canvas.width / rect.width,
+                y: (event.clientY - rect.top) * canvas.height / rect.height
+            };
+        }
+
+        canvas.addEventListener("pointerdown", (event) => {
+            event.preventDefault();
+            drawing = true;
+            canvas.setPointerCapture(event.pointerId);
+
+            const point = getCanvasPosition(event);
+
+            // Dessine un point même si l'utilisateur ne fait qu'un clic.
+            ctx.beginPath();
+            ctx.arc(point.x, point.y, ctx.lineWidth / 2, 0, Math.PI * 2);
+            ctx.fill();
+
+            ctx.beginPath();
+            ctx.moveTo(point.x, point.y);
+        });
+
+        canvas.addEventListener("pointermove", (event) => {
+            if (!drawing) return;
+
+            event.preventDefault();
+            const point = getCanvasPosition(event);
+
+            ctx.lineTo(point.x, point.y);
+            ctx.stroke();
+
+            // Le nouveau tracé commence à la dernière position.
+            ctx.beginPath();
+            ctx.moveTo(point.x, point.y);
+        });
+
+        function stopDrawing(event) {
+            drawing = false;
+            if (event) event.preventDefault();
+        }
+
+        canvas.addEventListener("pointerup", stopDrawing);
+        canvas.addEventListener("pointercancel", stopDrawing);
+        canvas.addEventListener("lostpointercapture", stopDrawing);
+
+        document.getElementById("clear").addEventListener("click", clearCanvas);
+
+        /*
+         * Convertit le dessin en image 28 x 28 :
+         * - cherche les pixels du trait blanc ;
+         * - recadre le chiffre ;
+         * - le redimensionne dans une zone de 20 x 20 maximum ;
+         * - le centre sur un fond noir de 28 x 28.
+         *
+         * Renvoie null si le canvas est vide.
+         */
+        function makeMnistPixels() {
+            const source = ctx.getImageData(0, 0, canvas.width, canvas.height);
+
+            let minX = canvas.width;
+            let minY = canvas.height;
+            let maxX = -1;
+            let maxY = -1;
+
+            // Repère les pixels clairs du chiffre.
+            for (let y = 0; y < canvas.height; y++) {
+                for (let x = 0; x < canvas.width; x++) {
+                    const index = (y * canvas.width + x) * 4;
+                    const brightness = source.data[index];
+
+                    if (brightness > 20) {
+                        minX = Math.min(minX, x);
+                        minY = Math.min(minY, y);
+                        maxX = Math.max(maxX, x);
+                        maxY = Math.max(maxY, y);
+                    }
+                }
+            }
+
+            // Aucun trait détecté.
+            if (maxX < 0) {
+                return null;
+            }
+
+            const boxWidth = maxX - minX + 1;
+            const boxHeight = maxY - minY + 1;
+
+            // Le chiffre occupe au maximum 20 x 20 pixels,
+            // avec une marge autour dans l’image finale 28 x 28.
+            const scale = 20 / Math.max(boxWidth, boxHeight);
+            const resizedWidth = Math.max(1, Math.round(boxWidth * scale));
+            const resizedHeight = Math.max(1, Math.round(boxHeight * scale));
+
+            const smallCanvas = document.createElement("canvas");
+            smallCanvas.width = 28;
+            smallCanvas.height = 28;
+
+            const smallCtx = smallCanvas.getContext("2d");
+            smallCtx.fillStyle = "black";
+            smallCtx.fillRect(0, 0, 28, 28);
+            smallCtx.imageSmoothingEnabled = true;
+            smallCtx.imageSmoothingQuality = "high";
+
+            const offsetX = Math.round((28 - resizedWidth) / 2);
+            const offsetY = Math.round((28 - resizedHeight) / 2);
+
+            smallCtx.drawImage(
+                canvas,
+                minX, minY, boxWidth, boxHeight,
+                offsetX, offsetY, resizedWidth, resizedHeight
+            );
+
+            const imageData = smallCtx.getImageData(0, 0, 28, 28).data;
+            const pixels = [];
+
+            for (let y = 0; y < 28; y++) {
+                const row = [];
+
+                for (let x = 0; x < 28; x++) {
+                    const index = (y * 28 + x) * 4;
+                    row.push(imageData[index]); // Valeur rouge, entre 0 et 255.
+                }
+
+                pixels.push(row);
+            }
+
+            return pixels;
+        }
+
+        predictButton.addEventListener("click", async () => {
+            const pixels = makeMnistPixels();
+
+            if (pixels === null) {
+                resultBox.textContent = "Aucun chiffre détecté. Dessinez un chiffre avant de prédire.";
+                return;
+            }
+
+            resultBox.textContent = "Prédiction en cours…";
+            predictButton.disabled = true;
+
+            try {
+                const response = await fetch(API_URL, {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json"
+                    },
+                    body: JSON.stringify({ pixels: pixels })
+                });
+
+                const data = await response.json();
+
+                if (!response.ok) {
+                    const errorMessage = data.detail || JSON.stringify(data);
+                    resultBox.textContent = "Erreur du backend : " + errorMessage;
+                    return;
+                }
+
+                if (data.digit === null || data.digit === undefined) {
+                    resultBox.textContent = data.message || "Chiffre non reconnu.";
+                    return;
+                }
+
+                const confidenceText =
+                    data.confidence !== undefined
+                        ? ` — confiance : ${(data.confidence * 100).toFixed(1)} %`
+                        : "";
+
+                resultBox.textContent = `Résultat : ${data.digit}${confidenceText}`;
+            } catch (error) {
+                resultBox.textContent =
+                    "Impossible de joindre le backend. Vérifiez qu’il tourne sur " + API_URL;
+            } finally {
+                predictButton.disabled = false;
+            }
+        });
+
+        clearCanvas();
+    </script>
+</body>
+</html>
